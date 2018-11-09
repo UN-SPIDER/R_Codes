@@ -1,0 +1,374 @@
+---
+title: ''
+output:
+  html_notebook: default
+  pdf_document: default
+---
+##Recommended Practice: Drought monitoring using the Standardized Vegetation Index (SVI) - R script for large areas
+####SVI computation using chunking for large countries 
+
+Enter the path to the a folder where you have enough free space to store your MODIS data and the resulting products.
+
+Please do not use backslashes except you are working with a MAC or Linux.
+
+```{r eval=FALSE}
+dataPath <- "D:/Peru_SVI"
+```
+
+Automatic download from AppEEARS 
+```{r eval=FALSE}
+downloadList<-"D:/Peru_SVI/peru-download-list.txt"
+```
+
+Cloud quality masking: Replace the '0' with a '1' to apply MODIS pixel reliability data. If you are not sure whether you should enable this option, it is recommended to leave it as is. Check the "in detail" page for more information.
+```{r eval=FALSE}
+cloudmask <- 1
+```
+
+Change the capture of the SVI maps (jpg) according to your study area in line 244
+
+Setting SVI image colours 
+```{r eval=FALSE}
+colorsSVI<-c('#4C0E0D', '#E72223', '#F19069', '#F9F6C6', '#64B14B', '#04984A', '#00320E')
+```
+
+No need to enter more - mark the whole code (ctrl + a) and click on 'run' (or press ctrl + enter)
+****
+> Installing all needed packages
+
+****
+
+```{r eval=FALSE}
+install.packages("zoo")
+install.packages("raster")
+install.packages("curl")
+install.packages("rgdal")
+```
+
+Calling packages for use
+
+```{r eval=FALSE}
+library(zoo)
+library(raster)
+library(curl)
+library(rgdal)
+```
+
+Downloading Files (except 'VI quality control' data as they are not needed)
+**If you downloaded your data from appEEARS beforehand, comment out the following seven lines using "#"** 
+
+```{r eval=FALSE}
+filesl <- scan(downloadList, what='list', sep='\n')
+for (d in 1:length(filesl)){
+  if (grepl("_VI_Quality_",filesl[d]) == F){
+    curl_download(url=filesl[d], destfile=paste0(dataPath,"/",basename(filesl[d])),quiet = T, handle = new_handle())
+  }
+  print(paste0('Downloading source data (Step 1 of 4): ',round(d / length(filesl) * 100, digits=2),'%'))
+}
+```
+
+Creating a temp-directory and setting memory limit
+
+```{r eval=FALSE}
+dir.create(paste0(dataPath,'/temp/'))
+rasterOptions(tmpdir=paste0(dataPath,'/temp/'))
+rasterOptions(tolerance=1)
+memory.limit(80000)
+```
+
+Listing up all downloaded TIF-files in the data folder
+
+```{r eval=FALSE}
+rasterData <- list.files(path=dataPath, pattern='.tif$', recursive=F, ignore.case=T, full.names=T)
+rasterFiles <- basename(rasterData)
+```
+****
+> Chunk-size for processing (in Pixel)
+
+****
+You can reduce these numbers if you run into RAM-Problems early on:
+Try reducing the numbers to 1000. If you still run into RAM-problems, reduce to 500 or 250.
+Only reduce the numbers if you have memory issues ("Error: cannot allocate vector of size [...]")
+
+```{r eval=FALSE}
+chwidth <- 1500
+chheight <- 1500
+```
+****
+> Starting SVI processing
+
+****
+Listing all EVI rasters and their corresponding pixel reliability data
+
+```{r eval=FALSE}
+EVIrasterData <- rasterData[grepl('EVI',rasterData)] 
+EVIqc <- rasterData[grepl('pixel_reliability',rasterData)] 
+```
+
+Loading example image from the downloaded data
+
+```{r eval=FALSE}
+exRST <- raster(EVIrasterData[1])
+```
+<center>
+![](C:/Users/johanna.roll.UNSPIDER/Desktop/Images_for_Peru/EVI_sample.png)
+</center>
+```{r eval=FALSE}
+exPR <- raster(EVIqc[1])
+```
+<center>
+![](C:/Users/johanna.roll.UNSPIDER/Desktop/Images_for_Peru/Pixel_Reliability_sample.png) 
+</center>
+
+(Automatically adjusting chunk size for small scenes if needed)
+
+```{r eval=FALSE}
+initial <- raster(EVIrasterData[1])
+if (as.numeric(ncol(initial)) <= chwidth || as.numeric(nrow(initial)) <= chheight){
+  chwidth <- ceiling(ncol(initial)/2)
+}
+```
+
+Parsing all DOY and Years from the filenames
+
+```{r eval=FALSE}
+DOYs <- unique(substr(basename(EVIrasterData),38,40))
+YEARs <- unique(substr(basename(EVIrasterData),34,37))
+```
+****
+> SVI: chunkwise calculation
+
+****
+Creating output folders within your main directory
+
+```{r eval=FALSE}
+dir.create(paste0(dataPath,'/SVI'))
+dir.create(paste0(dataPath,'/SVIjpg'))
+dir.create(paste0(dataPath,'/EVI'))
+```
+****
+> Determining chunk-shapefile
+
+****
+Loading example image from the downloaded data
+
+```{r eval=FALSE}
+exRST <- raster(EVIrasterData[1])
+```
+
+Determining chunks
+
+```{r eval=FALSE}
+h        <- ceiling(ncol(exRST)/ceiling(ncol(exRST) / chwidth))
+v        <- ceiling(nrow(exRST)/ceiling(nrow(exRST) / chheight)) 
+```
+
+Creating shapefile for each chunk
+
+```{r eval=FALSE}
+split      <- aggregate(exRST,fact=c(h,v))
+split[]    <- 1:ncell(split)
+splitshp <- rasterToPolygons(split)
+names(splitshp) <- 'shapes'
+notiles <- ncell(split)
+```
+
+Filtervalues for quality masking: "0" and "1" in the pixel reliability bands are accepted as sufficient quality
+
+Rank Key|Summary QA
+--------|--------
+-1      |Fill/No Data
+***0*** |***Good data***
+***1*** |***Marginal Data***
+ 2      |Snow/Ice
+ 3      |Cloudy
+ 
+For this analysis we will be considering good data and marginal data
+
+```{r eval=FALSE}
+goodValues <- c(0,1)
+```
+
+****
+> Masking clouds/snow and splitting data into chunks
+
+****
+```{r eval=FALSE}
+for (d in 1:length(DOYs)){
+  #Filtering all relevant data for this DOY
+  vrasterData <- EVIrasterData[grepl(paste0(DOYs[d],'_aid'),EVIrasterData)]
+  #..and their corresponding pixel reliability data
+  vQC <- EVIqc[grepl(paste0(DOYs[d],'_aid'),EVIqc)]
+  #Reading years of available data
+  vYear <- substr(basename(vrasterData),34,37)
+  for (y in 1:length(vYear)){
+    viPRE <- raster(vrasterData[y])
+    #Applying quality mask to each image (if masking was activated)
+    if (cloudmask == 1){
+      qc <- raster(vQC[y])
+      viPRE <- overlay(viPRE, qc, fun = function(x, y) {
+        x[!(y %in% goodValues)] <- NA
+        return(x)
+      })
+    }
+    
+    #####Splitting (masked) data into Chunks 
+    for(i in 1:ncell(split)){
+      ex          <- extent(splitshp[splitshp$shapes==i,])
+      exx         <- crop(viPRE,ex)
+      writeRaster(exx,filename=paste0(dataPath,'/temp/',DOYs[d],'_',vYear[y],'_EVICHUNK',
+                                      formatC(i, width=3, flag='0')),format='GTiff', overwrite=TRUE)
+    }
+  }
+  #(Progress report)
+  print(paste0('Data preparation (SVI) & masking (Step 2 of 4): ',round(d / length(DOYs)  * 100, digits=2),'%'))
+}
+```
+<center>
+![](C:/Users/johanna.roll.UNSPIDER/Desktop/Images_for_Peru/TheMosaic_rez.png) 
+</center>
+
+****
+> Applying SVI calculation for each chunk
+
+****
+List all chunks
+
+```{r eval=FALSE}
+EVIchunks <- list.files(path=paste0(dataPath,'/temp/'), pattern='_EVICHUNK', recursive=F, 
+                        ignore.case=T, full.names=T)
+for (d in 1:length(DOYs)){
+  for (t in 1:notiles){
+    #Filtering relevant chunks for this specific date
+    sEVIchunks <- EVIchunks[grepl(paste0(DOYs[d],'_'),EVIchunks)] 
+    sEVIchunks <- sEVIchunks[grepl(paste0('_EVICHUNK',formatC(t, width=3, flag='0')),sEVIchunks)] 
+    #Listing years of data available for each DOY
+    vvYear <- substr(basename(sEVIchunks),5,8)
+    
+    if (length(sEVIchunks) > 0){
+      sT <- stack(sEVIchunks)
+      
+      #Removing filler-values from EVI data
+      #The fill value for MODIS images is -3000  
+      sT[sT<(-2999)] <- NA
+      
+      
+      evimean <- stackApply (sT, rep (1, nlayers (sT)), mean, na.rm=T) #calculating the mean for the layer stack for each individual pixel
+      evisd <- stackApply (sT, rep (1, nlayers (sT)), sd, na.rm=T) 
+      SVI <- ((sT-evimean)/evisd)
+      
+      
+      ############################################
+      
+      #Writing SVI-chunks for each available year
+      for (y in 1:length(vvYear)){
+        writeRaster(SVI[[y]],filename=paste0(dataPath,'/temp/',DOYs[d],'_',vvYear[y],'_SVICHUNK',
+                                             formatC(t, width=3, flag='0')),format='GTiff', overwrite=TRUE)
+      }
+    }
+  }
+  #(Progress report)
+  print(paste0('SVI processing (Step 3 of 4): ',round(d / length(DOYs)  * 100, digits=2),'%'))
+}
+```
+****
+> SVI chunk merging and output
+
+****
+Listing all created chunks
+
+```{r eval=FALSE}
+SVIchunks <- list.files(path=paste0(dataPath,'/temp/'), pattern='_SVICHUNK', recursive=F, ignore.case=T, 
+                        full.names=T)
+#Looping through each available DOY_YEAR combination
+for (y in 1:length(YEARs)){
+  for (d in 1:length(DOYs)){
+    #Listing relevant chunks (EVI, SVI) for this specific date
+    sSVIchunks <- SVIchunks[grepl(paste0(DOYs[d],'_',YEARs[y],'_'),SVIchunks)]
+    sEVIchunks <- EVIchunks[grepl(paste0(DOYs[d],'_',YEARs[y],'_'),EVIchunks)] 
+    #Creating raster-list of the EVI chunks
+    if (length(sEVIchunks) > 0){
+      if (length(sEVIchunks) > 1){
+        sMos <- list()
+        for (o in 1:length(sEVIchunks)){
+          sMos <- append(sMos, raster(sEVIchunks[o]))
+        }
+        #Mosaicking the EVI chunks
+        sMos$fun = mean
+        Mos <- do.call(mosaic, sMos)
+        Mos <- Mos*0.0001
+        #Output of mosaicked, scaled EVI image
+        writeRaster(Mos,filename=paste0(dataPath,'/EVI/',DOYs[d],'_',YEARs[y],'_EVI'),format='GTiff', 
+                    overwrite=TRUE)
+      }else{
+        #Fail-safe in case only one chunk is available
+        exp <- raster(sEVIchunks[1])
+        exp <- exp*0.0001
+        writeRaster(exp,filename=paste0(dataPath,'/EVI/',DOYs[d],'_',YEARs[y],'_EVI'),format='GTiff', 
+                    overwrite=TRUE)
+      }
+    }
+    #Creating raster-list of the SVI chunks
+    if (length(sSVIchunks) > 0){
+      if (length(sSVIchunks) > 1){
+        sMos <- list()
+        for (o in 1:length(sSVIchunks)){
+          sMos <- append(sMos, raster(sSVIchunks[o]))
+        }
+        #Mosaicking the SVI chunks
+        sMos$fun = mean
+        Mos <- do.call(mosaic, sMos)
+        
+        #Plotting JPG of SVI
+        
+        stdev <- cellStats(Mos, stat='sd')#calculating the standard deviation for each layer of the raster data,
+                                          #returning as many values as number of input layers
+        stdev2 <- 2*stdev #2 standard deviations, returning as many values as number of input layers
+        stdev15 <- 1.5*stdev #1.5 standard deviations, returning as many values as number of input layers
+        
+        breaksSVI <- c(-4, -stdev2, -stdev15, -stdev, stdev, stdev15, stdev2, 4) 
+        #definition of the breaks of the resulting maps based on statistics
+        #(standard deviation), returning as many values as number of input layers
+        #times 6 (i.e. 6 values for each of the 15 layers) plus 2
+        #(the -4 in the beginning and 4 in the end)
+        
+        l <- nlayers(Mos)
+        x <- seq(2, 6*l+1, l)
+      
+        
+        jpeg(filename=paste0(dataPath,'/SVIjpg/',DOYs[d],"_",YEARs[y],".jpg",sep=""), quality = 100)
+        
+        
+        plot(Mos, #zlim=c(0,100), 
+             breaks=c(-4, breaksSVI[x], 4),                       #sets the breaks as defined above
+             col=colorsSVI,                                       #sets the colors as defined above
+             main=paste("SVI"," (EVI)"," Peru ",DOYs[d]," ",YEARs[y],sep=""))#automizes the title of the plot
+        
+        
+        dev.off()
+        
+        #Output: final SVI mosaic
+        writeRaster(Mos,filename=paste0(dataPath,'/SVI/',DOYs[d],'_',YEARs[y],'_SVI'),format='GTiff', 
+                    overwrite=TRUE)
+      }else{
+        #Fail-safe in case only one chunk is available
+        writeRaster(raster(sSVIchunks[1]),filename=paste0(dataPath,'/SVI/',DOYs[d],'_',YEARs[y],'_SVI'),
+                    format='GTiff', overwrite=TRUE)
+      }
+    }
+    print(paste0('EVI output & SVI output (Step 4 of 4): ',round((d+(length(DOYs)*(y-1)))/(length(DOYs)*length(YEARs))*100, digits=2),'%')) 
+  }
+}
+```
+
+<center>
+![](C:/Users/johanna.roll.UNSPIDER/Desktop/Images_for_Peru/SVI_273_2017.jpg)
+</center>
+
+
+Removing temp files to free space
+
+```{r eval=FALSE}
+#tmp <- list.files(path=paste0(dataPath,'/temp/'), recursive=F, ignore.case=T, full.names=T)
+#file.remove(tmp)
+```
