@@ -32,7 +32,7 @@ path_c <- "C:/User/MOD13Q1/Data/Data_Pixel_Reliability" # ToDo: enter link to th
 dlist_c <- dir(path_c,pattern="DOY")
 
 path_jpg <- "C:/User/MOD13Q1/Data/VCI_Maps_Guatemala_jpg" # ToDo: enter the link to the folder where you want to store the resulting .jpg-images.
-path_tif <- "C:/User/MOD13Q1/Data/VCI_Maps_Guatemala_jpg" # ToDo: enter the link to the folder where you want to store the resulting .tif-files.
+path_tif <- "C:/User/MOD13Q1/Data/VCI_Maps_Guatemala_tif" # ToDo: enter the link to the folder where you want to store the resulting .tif-files.
 
 pb <- txtProgressBar (min=0, max=length(dlist), style=1) # this creates a progress bar in the Console, 
 # which ends at the end of the loop. The proegress bar looks like this: =========
